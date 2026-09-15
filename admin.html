@@ -148,6 +148,7 @@ tr:last-child td{border-bottom:none;}
       <a data-view="orders">الطلبات</a>
       <a data-view="stats">الإحصائيات</a>
       <a data-view="pricing">أسعار التوصيل</a>
+      <a data-view="noestOffices">مكاتب Noest</a>
       <a data-view="settings">الإعدادات</a>
     </nav>
     <div class="logout"><button id="logoutBtn">تسجيل الخروج</button></div>
@@ -213,12 +214,31 @@ tr:last-child td{border-bottom:none;}
         <h2>أسعار التوصيل (Noest)</h2>
         <button class="btn btn-primary" id="savePricingBtn">حفظ الأسعار</button>
       </div>
-      <div class="note">تعديل هذه الأسعار ينعكس فورًا على الموقع (استمارة الطلب) — لا حاجة لإعادة نشر الموقع. عمود "رمز مكتب Noest" اختياري ويُستعمل فقط عند إرسال طلبيات "توصيل إلى مكتب" تلقائيًا إلى Noest Express (زر "تأكيد وإرسال لـ Noest" في صفحة الطلبات).</div>
+      <div class="note">تعديل هذه الأسعار ينعكس فورًا على الموقع (استمارة الطلب) — لا حاجة لإعادة نشر الموقع. عمود "رمز مكتب Noest" هنا هو رمز احتياطي عام للولاية فقط (يُستعمل إذا لم يوجد رمز خاص بالمكتب في صفحة "مكاتب Noest"). للدقة الكاملة في التوصيل عبر مكتب، املئي صفحة "مكاتب Noest" بدل هذا العمود.</div>
       <div class="ok" id="pricingOk"></div>
       <div class="pricing-table-wrap">
         <table>
-          <thead><tr><th>الولاية</th><th>سعر الوحدة</th><th>مكتب (Stop Desk)</th><th>منزل (Home)</th><th>رمز مكتب Noest</th></tr></thead>
+          <thead><tr><th>الولاية</th><th>سعر الوحدة</th><th>مكتب (Stop Desk)</th><th>منزل (Home)</th><th>رمز عام احتياطي</th></tr></thead>
           <tbody id="pricingTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- NOEST OFFICES -->
+    <div class="view" id="view-noestOffices">
+      <div class="view-head">
+        <h2>مكاتب Noest (Stop Desk)</h2>
+        <button class="btn btn-primary" id="saveNoestOfficesBtn">حفظ الرموز</button>
+      </div>
+      <div class="note">كل مكتب هنا هو نفس المكتب الذي يظهر للزبونة عند اختيار "توصيل إلى مكتب" في الموقع. أدخلي أمامه رمز المكتب المطابق من لوحة تحكم Noest (مثال: 16B) حتى تُرسل الطلبيات تلقائيًا إلى المكتب الصحيح بالضبط. لا حاجة لملء كل المكاتب دفعة واحدة — املئي فقط المكاتب التي تستقبلين طلبيات فيها فعليًا.</div>
+      <div class="ok" id="noestOfficesOk"></div>
+      <div class="search-box" style="margin-bottom:14px;max-width:360px;">
+        <input type="text" id="noestOfficesSearch" placeholder="ابحثي عن ولاية أو مكتب..." style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:7px;">
+      </div>
+      <div class="pricing-table-wrap">
+        <table>
+          <thead><tr><th>الولاية</th><th>المكتب</th><th>رمز مكتب Noest</th></tr></thead>
+          <tbody id="noestOfficesTable"></tbody>
         </table>
       </div>
     </div>
@@ -454,6 +474,7 @@ document.querySelectorAll("aside nav a").forEach(a=>{
     if(v==="dash") renderDash();
     if(v==="stats") renderStats();
     if(v==="pricing") renderPricingTable();
+    if(v==="noestOffices") renderNoestOfficesTable();
   };
 });
 
@@ -781,13 +802,27 @@ async function confirmAndSend(id){
   if(!o) return;
   if(!confirm("تأكيد هذه الطلبية ومحاولة إرسالها تلقائيًا إلى Noest Express؟")) return;
   try{
-    // Attach the Noest "station code" for this wilaya (set from the pricing page)
-    // so stop-desk orders can be auto-created; home orders don't need it.
+    // 1) A code you corrected by hand on the "مكاتب Noest" page always wins.
+    // 2) Otherwise, the code computed automatically for this exact office (from the
+    //    official Noest office directory) is used — no setup needed for this to work.
+    // 3) Otherwise, the wilaya's general backup code (from "أسعار التوصيل").
+    // Home-delivery orders don't need any of this.
     let stationCode = "";
     try{
-      const pricingSnap = await db.collection("config").doc("pricing").get();
-      const pricing = pricingSnap.exists ? (pricingSnap.data()||{}) : {};
-      stationCode = (pricing[o.wilayaCode] && pricing[o.wilayaCode].stationCode) || "";
+      if(o.office && o.office.label){
+        const officesSnap = await db.collection("config").doc("noest_offices").get();
+        const officeCodes = officesSnap.exists ? (officesSnap.data()||{}) : {};
+        stationCode = officeCodes[o.office.label] || "";
+        if(!stationCode){
+          const match = OFFICES_LIST.find(([,label])=>label===o.office.label);
+          if(match) stationCode = match[2] || "";
+        }
+      }
+      if(!stationCode){
+        const pricingSnap = await db.collection("config").doc("pricing").get();
+        const pricing = pricingSnap.exists ? (pricingSnap.data()||{}) : {};
+        stationCode = (pricing[o.wilayaCode] && pricing[o.wilayaCode].stationCode) || "";
+      }
     }catch(e){ console.error("could not load Noest station codes", e); }
     const payload = Object.assign({}, o, { stationCode });
     const res = await fetch("/.netlify/functions/create-noest-order", {
@@ -985,6 +1020,180 @@ document.getElementById("savePricingBtn").onclick = async ()=>{
   }catch(e){
     console.error(e);
     alert("تعذّر حفظ الأسعار: " + (e.message||e.code||""));
+  }
+};
+
+/* ---------- Noest office station codes (per Stop Desk office) ---------- */
+/* [wilaya name, office label] — must match the offices list on the storefront (index.html)
+   so the code entered here maps to the exact office the customer picked at checkout. */
+const OFFICES_LIST = [
+["Adrar","Adrar (Centre)","01A"],
+["Chlef","Chlef (Centre)","02A"],
+["Chlef","Chlef - Ténès","02B"],
+["Laghouat","Laghouat (Centre)","03A"],
+["Laghouat","Laghouat - Aflou","03B"],
+["Oum El Bouagui","Oum El Bouaghi - Ain Mlila","04A"],
+["Oum El Bouagui","Oum El Bouaghi (Centre)","04B"],
+["Oum El Bouagui","Oum El Bouaghi - Aïn El Beïda","04C"],
+["Batna","Batna - Meddour Kchida","05A"],
+["Batna","Batna - Barika","05B"],
+["Batna","Batna - Oulmi","05C"],
+["Bejaia","Bejaïa (Centre)","06A"],
+["Bejaia","Bejaïa - Akbou","06B"],
+["Bejaia","Bejaïa - El Kseur","06C"],
+["Biskra","Biskra (Centre)","07A"],
+["Bechar","Béchar (Centre)","08A"],
+["Blida","Blida (Centre)","09A"],
+["Blida","Blida - Boufarik","09B"],
+["Blida","Blida - Mouzaia","09C"],
+["Bouira","Bouira (Centre)","10A"],
+["Bouira","Bouira - Lakhdaria","10B"],
+["Tamanrasset","Tamanrasset (Centre)","11A"],
+["Tebessa","Tébessa (Centre)","12A"],
+["Tebessa","Tébessa - El Ouenza","12B"],
+["Tlemcen","Tlemcen (Centre)","13A"],
+["Tlemcen","Tlemcen - Maghnia","13B"],
+["Tiaret","Tiaret (Centre)","14A"],
+["Tiaret","Tiaret - Frenda","14B"],
+["Tizi Ouzou","Tizi Ouzou (Centre)","15A"],
+["Tizi Ouzou","Tizi Ouzou - Azazga","15B"],
+["Tizi Ouzou","Tizi Ouzou - Draa Ben Khedda","15C"],
+["Alger","Alger - Bir Mourad Raïs","16A"],
+["Alger","Alger - Bab Ezzouar","16B"],
+["Alger","Alger - Chéraga","16C"],
+["Alger","Alger - Reghaïa","16D"],
+["Alger","Alger - Centre Sacré-Cœur","16E"],
+["Alger","Alger - Baba Hassen","16F"],
+["Alger","Alger - Baraki","16G"],
+["Alger","Alger - Bordj El Bahri","16H"],
+["Alger","Alger - Zéralda","16I"],
+["Alger","Alger - Birkhadem","16J"],
+["Alger","Alger - Hussein Dey","16K"],
+["Djelfa","Djelfa (Centre)","17A"],
+["Djelfa","Djelfa - Ain Oussara","17B"],
+["Jijel","Jijel (Centre)","18A"],
+["Jijel","Jijel - El Milia","18B"],
+["Setif","Sétif (Centre)","19A"],
+["Setif","Sétif - El Eulma","19B"],
+["Setif","Sétif - Ain Oulmene","19C"],
+["Setif","Sétif - Guidjel","19D"],
+["Saida","Saïda (Centre)","20A"],
+["Skikda","Skikda (Centre)","21A"],
+["Skikda","Skikda - Azzaba","21B"],
+["Sidi Bel Abbes","Sidi Bel Abbès (Centre)","22A"],
+["Annaba","Annaba (Centre)","23A"],
+["Annaba","Annaba - El Bouni","23B"],
+["Guelma","Guelma (Centre)","24A"],
+["Constantine","Constantine - Zouaghi","25A"],
+["Constantine","Constantine - Ali Mendjeli","25B"],
+["Constantine","Constantine (Centre)","25C"],
+["Medea","Médéa (Centre)","26A"],
+["Mostaganem","Mostaganem (Centre)","27A"],
+["Mostaganem","Mostaganem - Sidi Lakhder","27B"],
+["M'Sila","M'Sila (Centre)","28A"],
+["M'Sila","M'Sila - Bousaada","28B"],
+["Mascara","Mascara - Mohammadia","29A"],
+["Mascara","Mascara (Ville)","29B"],
+["Ouargla","Ouargla (Centre)","30A"],
+["Ouargla","Ouargla - Hassi Messaoud","30B"],
+["Oran","Oran - Maraval","31A"],
+["Oran","Oran - Bir El Djir","31B"],
+["Oran","Oran - Gambetta","31C"],
+["Oran","Oran - Arzew","31D"],
+["Oran","Oran - Essabah","31E"],
+["El Bayadh","El Bayadh (Centre)","32A"],
+["illizi","Illizi (Centre)","33A"],
+["Bordj Bou Arreridj","Bordj Bou Arreridj (Centre)","34A"],
+["Bordj Bou Arreridj","Bordj Bou Arreridj - Ras El Oued","34B"],
+["Boumerdès","Boumerdès (Centre)","35A"],
+["Boumerdès","Boumerdès - Ouled Moussa","35B"],
+["Boumerdès","Boumerdès - Bordj Menaiel","35C"],
+["Boumerdès","Boumerdès - Dellys","35D"],
+["El Tarf","El Tarf (Centre)","36A"],
+["Tindouf","Tindouf (Centre)","37A"],
+["Tissemsilt","Tissemsilt (Centre)","38A"],
+["El Oued","El Oued (Centre)","39A"],
+["Kenchela","Khenchela (Centre)","40A"],
+["Souk Ahrass","Souk Ahras (Centre)","41A"],
+["Tipaza","Tipaza (Centre)","42A"],
+["Tipaza","Tipaza - Koléa","42B"],
+["Mila","Mila (Centre)","43A"],
+["Mila","Mila - Chelghoum El Aid","43B"],
+["Mila","Mila - Tadjenanet","43C"],
+["Mila","Mila - Ferdjioua","43D"],
+["Ain Defla","Aïn Defla (Centre)","44A"],
+["Ain Defla","Aïn Defla - Khemis Miliana","44B"],
+["Naama","Naâma - Mécheria","45A"],
+["Ain Temouchent","Aïn Témouchent (Centre)","46A"],
+["Ghardaïa","Ghardaïa (Centre)","47A"],
+["Relizane","Relizane (Centre)","48A"],
+["Timimoun","Timimoun (Centre)","49A"],
+["Ouled Djellal","Ouled Djellal (Centre)","51A"],
+["Beni Abbes","Béni Abbès (Centre)","52A"],
+["In Salah","In Salah (Centre)","53A"],
+["Touggourt","Touggourt (Centre)","55A"],
+["Djanet","Djanet (Centre)","56A"],
+["El M'Ghair","El M'Ghair (Centre)","57A"],
+["El Meniaa","El Meniaa (Centre)","58A"]
+];
+/* [wilaya name, office label, suggested Noest code] — the suggested code follows Noest's
+   own numbering pattern (2-digit wilaya number + sequential letter, e.g. "16B"), computed
+   from the same office directory the storefront's office list was built from. Spot-check a
+   few against your real Noest dashboard before trusting all of them, especially for wilayas
+   with many offices. */
+
+
+function noestOfficeKey(label){
+  return label; // Firestore map key = the office label itself
+}
+
+async function renderNoestOfficesTable(filter){
+  let codes = {};
+  try{
+    const snap = await db.collection("config").doc("noest_offices").get();
+    if(snap.exists) codes = snap.data() || {};
+  }catch(e){ console.error(e); }
+  const q = (filter||document.getElementById("noestOfficesSearch").value||"").trim().toLowerCase();
+  const tbody = document.getElementById("noestOfficesTable");
+  const rows = OFFICES_LIST
+    .filter(([wilaya,label])=> !q || wilaya.toLowerCase().includes(q) || label.toLowerCase().includes(q))
+    .map(([wilaya,label,suggested])=>{
+      const saved = codes[noestOfficeKey(label)];
+      const code = saved || suggested || "";
+      const isSuggested = !saved && !!suggested;
+      const badge = isSuggested ? `<span style="font-size:11px;color:#b8860b;margin-inline-start:6px;">مقترح تلقائيًا — تأكدي منه</span>` : "";
+      return `<tr data-label="${label.replace(/"/g,'&quot;')}">
+        <td>${wilaya}</td>
+        <td>${label}</td>
+        <td><input type="text" class="noest-office-code" value="${code}" placeholder="مثال: 16B" style="width:90px;">${badge}</td>
+      </tr>`;
+    });
+  tbody.innerHTML = rows.join("") || `<tr><td colspan="3" style="text-align:center;color:#8a8081;">لا توجد نتائج</td></tr>`;
+}
+document.getElementById("noestOfficesSearch").addEventListener("input", ()=>renderNoestOfficesTable());
+document.getElementById("saveNoestOfficesBtn").onclick = async ()=>{
+  // Save every office currently rendered (the search box only filters the view,
+  // so re-render the full list first to avoid overwriting codes for hidden rows).
+  const searchVal = document.getElementById("noestOfficesSearch").value;
+  document.getElementById("noestOfficesSearch").value = "";
+  await renderNoestOfficesTable("");
+  const data = {};
+  document.querySelectorAll("#noestOfficesTable tr[data-label]").forEach(tr=>{
+    const label = tr.getAttribute("data-label");
+    const code = (tr.querySelector(".noest-office-code").value||"").trim();
+    if(code) data[label] = code;
+  });
+  try{
+    await db.collection("config").doc("noest_offices").set(data);
+    const ok = document.getElementById("noestOfficesOk");
+    ok.textContent = "تم حفظ رموز المكاتب بنجاح.";
+    setTimeout(()=>ok.textContent="", 4000);
+  }catch(e){
+    console.error(e);
+    alert("تعذّر حفظ رموز المكاتب: " + (e.message||e.code||""));
+  }finally{
+    document.getElementById("noestOfficesSearch").value = searchVal;
+    renderNoestOfficesTable();
   }
 };
 
