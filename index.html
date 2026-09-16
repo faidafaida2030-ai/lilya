@@ -851,6 +851,68 @@ async function loadProducts(){
   }
 }
 
+/* ============ stock (inventory) ============ */
+/* When a customer completes an order, the ordered quantity is subtracted from
+   that product's matching size, straight in Firestore, using a transaction so
+   two customers ordering the same size at once can't oversell it. Products
+   sold without sizes have no per-size stock to track, so they're skipped —
+   the store owner controls those manually with the "Disponible" toggle. */
+async function decrementProductStock(productId, size, qty){
+  if(!productId || !size || !qty) return;
+  try{
+    await db.runTransaction(async (tx)=>{
+      const ref = db.collection("products").doc(productId);
+      const snap = await tx.get(ref);
+      if(!snap.exists) return;
+      const data = snap.data() || {};
+      const sizes = Array.isArray(data.sizes) ? data.sizes.slice() : [];
+      const idx = sizes.findIndex(s=>s.size===size);
+      if(idx===-1) return;
+      const newQty = Math.max(0, (sizes[idx].qty||0) - qty);
+      sizes[idx] = Object.assign({}, sizes[idx], {qty:newQty});
+      const update = {sizes};
+      // Every size sold out -> flip the product to "Non Disponible" automatically,
+      // exactly like the store owner would do by hand from the admin dashboard.
+      const allSoldOut = sizes.length > 0 && sizes.every(s=>(s.qty||0) <= 0);
+      if(allSoldOut) update.available = false;
+      tx.update(ref, update);
+    });
+  }catch(e){
+    console.error("could not decrement stock for", productId, size, e);
+  }
+}
+async function applyStockForOrderItems(items){
+  // items: [{id, size, qty}] — color isn't tracked as stock, only size is.
+  for(const it of items){
+    await decrementProductStock(it.id, it.size, it.qty||1);
+  }
+  // Refresh the in-memory catalogue right away so this browser's own view
+  // (out-of-stock labels, size dropdowns) reflects the new quantities too.
+  try{
+    PRODUCTS = await loadProducts();
+    renderProducts();
+  }catch(e){ console.error(e); }
+}
+
+/* ============ one order at a time per phone number ============ */
+/* Stops the same customer from accidentally sending several orders in a row
+   (double-clicking submit, re-sending the same cart, etc). Once the store
+   owner confirms the earlier order (status moves off "pending" in the admin
+   dashboard), that phone number is free to order again. */
+async function hasPendingOrderForPhone(phone){
+  if(!phone) return false;
+  try{
+    const snap = await db.collection("orders").where("phone","==",phone).get();
+    return snap.docs.some(d=>{
+      const data = d.data();
+      return !data.status || data.status === "pending";
+    });
+  }catch(e){
+    console.error("could not check for a duplicate order", e);
+    return false; // if the check itself fails, don't block a legitimate order
+  }
+}
+
 let PRODUCTS = [];
 let activeCat = "all";
 
@@ -1235,6 +1297,13 @@ document.getElementById("orderForm").addEventListener("submit", async function(e
 
   if(!w){ alert(L==="ar"?"من فضلك اختاري الولاية":"Veuillez choisir la wilaya"); return; }
 
+  if(await hasPendingOrderForPhone(phone)){
+    alert(L==="ar"
+      ? "لديك طلبية سابقة بنفس رقم الهاتف بانتظار التأكيد. من فضلك انتظري تأكيدها قبل إرسال طلبية جديدة، أو تواصلي معنا عبر واتساب لتعديلها."
+      : "Vous avez déjà une commande en attente avec ce numéro. Merci d'attendre sa confirmation avant d'en envoyer une nouvelle, ou contactez-nous sur WhatsApp pour la modifier.");
+    return;
+  }
+
   const shipRaw = deliv==="home" ? w.home : w.desk;
   const ship = (shipRaw===null||shipRaw===undefined) ? w.home : shipRaw;
   const delivLabel = deliv==="home" ? "Domicile" : "Stop Desk";
@@ -1265,6 +1334,7 @@ document.getElementById("orderForm").addEventListener("submit", async function(e
       const {id, ...orderData} = order;
       await db.collection("orders").doc(id).set(orderData);
     }catch(err){ console.error("could not log order", err); }
+    await applyStockForOrderItems(items.map(it=>({id:it.id, size:it.size, qty:it.qty})));
 
     const itemLines = items.map(it=>{
       const details = [it.color, it.size].filter(Boolean).join(" - ");
@@ -1333,6 +1403,7 @@ document.getElementById("orderForm").addEventListener("submit", async function(e
     const {id: _oid, ...orderData} = order;
     await db.collection("orders").doc(_oid).set(orderData);
   }catch(err){ console.error("could not log order", err); }
+  if(p) await applyStockForOrderItems([{id:p.id, size, qty}]);
 
   const lines = L==="ar" ? [
     `طلب جديد من موقع lilya_brannd`,
