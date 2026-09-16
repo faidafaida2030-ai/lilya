@@ -67,16 +67,16 @@ function buildNoestPayload(order, credentials, stationCode) {
     client: `${order.name || ""} ${order.lastname || ""}`.trim(),
     phone: order.phone,
     adresse: order.commune ? `${order.commune}, ${order.wilaya}` : order.wilaya || "",
-    wilaya_id: order.wilayaCode,
+    wilaya_id: String(order.wilayaCode), // Noest expects numeric-looking fields as strings
     commune: order.commune || order.wilaya,
-    montant: order.total, // COD amount = products + shipping
+    montant: String(order.total), // COD amount = products + shipping
     remarque: "",
     produit: productSummary(order),
-    type_id: 1, // 1 = normal delivery, 2 = exchange, 3 = pick-up (per Noest spec)
-    poids: 1, // weight in kg — adjust if you sell heavy items
-    quantite: totalQuantity(order),
-    can_open: 1, // let the customer open the parcel before paying
-    stop_desk: isStopDesk ? 1 : 0,
+    type_id: "1", // 1 = normal delivery, 2 = exchange, 3 = pick-up (per Noest spec)
+    poids: "1", // weight in kg — adjust if you sell heavy items
+    quantite: String(totalQuantity(order)),
+    can_open: "1", // let the customer open the parcel before paying
+    stop_desk: isStopDesk ? "1" : "0",
   };
 
   if (isStopDesk) {
