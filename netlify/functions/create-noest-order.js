@@ -91,6 +91,17 @@ function buildNoestPayload(order, credentials, stationCode) {
   return payload;
 }
 
+function formatValidationErrors(data) {
+  // Laravel-style validation error body: { message, errors: { field: ["msg", ...] } }
+  if (data && data.errors && typeof data.errors === "object") {
+    const lines = Object.entries(data.errors).map(
+      ([field, msgs]) => `${field}: ${Array.isArray(msgs) ? msgs.join(" / ") : msgs}`
+    );
+    if (lines.length) return lines.join(" | ");
+  }
+  return null;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
@@ -142,11 +153,14 @@ exports.handler = async function (event) {
     const createData = await createRes.json().catch(() => ({}));
 
     if (!createRes.ok || createData.success === false) {
+      const fieldDetails = formatValidationErrors(createData);
+      const baseMessage = createData.message || createData.error || "فشل إنشاء الطلبية في Noest.";
       return {
         statusCode: createRes.status || 502,
         body: JSON.stringify({
-          error: createData.message || createData.error || "فشل إنشاء الطلبية في Noest.",
+          error: fieldDetails ? `${baseMessage} — ${fieldDetails}` : baseMessage,
           raw: createData,
+          sentPayload: Object.assign({}, payload, { api_token: "(hidden)", user_guid: "(hidden)" }),
         }),
       };
     }
