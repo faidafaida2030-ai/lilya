@@ -117,6 +117,21 @@ tr:last-child td{border-bottom:none;}
 .settings-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px;max-width:480px;margin-bottom:24px;}
 .settings-card h3{margin-top:0;}
 .settings-card input{width:100%;padding:10px;border:1.5px solid var(--line);border-radius:7px;margin:6px 0 12px;}
+.inv-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:16px;}
+.inv-head{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
+.inv-head img{width:44px;height:56px;object-fit:cover;border-radius:6px;background:var(--pink);}
+.inv-head h4{margin:0;font-size:16px;}
+.inv-cols{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+@media(max-width:760px){.inv-cols{grid-template-columns:1fr;}}
+.inv-table{width:100%;border-collapse:collapse;font-size:13.5px;}
+.inv-table th{text-align:right;color:#8a8081;font-weight:700;font-size:12px;padding:4px 6px;border-bottom:1px solid var(--line);}
+.inv-table td{padding:6px;border-bottom:1px solid var(--line);}
+.inv-qty{font-weight:800;}
+.inv-qty.zero{color:var(--red);}
+.inv-qty.low{color:var(--amber);}
+.inv-color-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px;border-bottom:1px solid var(--line);font-size:13.5px;}
+.inv-color-row .sw{width:14px;height:14px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.15);margin-inline-end:6px;}
+.inv-note{font-size:12.5px;color:#8a8081;}
 .pricing-table-wrap{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
 .pricing-table-wrap table{border:none;border-radius:0;}
 .pricing-table-wrap input{width:90px;border:1.5px solid var(--line);border-radius:6px;padding:6px 8px;}
@@ -146,6 +161,7 @@ tr:last-child td{border-bottom:none;}
       <a data-view="dash" class="active">لوحة القيادة</a>
       <a data-view="products">المنتجات</a>
       <a data-view="orders">الطلبات</a>
+      <a data-view="inventory">المخزون</a>
       <a data-view="stats">الإحصائيات</a>
       <a data-view="pricing">أسعار التوصيل</a>
       <a data-view="noestOffices">مكاتب Noest</a>
@@ -187,6 +203,20 @@ tr:last-child td{border-bottom:none;}
         <tbody id="ordersTable"></tbody>
       </table>
       <div class="empty" id="ordersEmpty" style="display:none;">لا توجد طلبات بعد.</div>
+    </div>
+
+    <!-- INVENTORY -->
+    <div class="view" id="view-inventory">
+      <div class="view-head">
+        <h2>المخزون</h2>
+        <button class="btn btn-ghost" id="refreshInventory">تحديث</button>
+      </div>
+      <div class="note">لكل منتج: الكمية المتبقية من كل مقاس (وعدد ما بيع منه حسب الطلبات)، وقائمة الألوان مع عدد مرات طلب كل لون. المنتجات بدون مقاسات مُتحكم فيها يدويًا بزر "متوفر/غير متوفر" فقط.</div>
+      <div class="search-box" style="margin:14px 0;max-width:360px;">
+        <input type="text" id="inventorySearch" placeholder="ابحثي عن منتج..." style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:7px;">
+      </div>
+      <div id="inventoryList"></div>
+      <div class="empty" id="inventoryEmpty" style="display:none;">لا توجد منتجات بعد.</div>
     </div>
 
     <!-- STATS -->
@@ -471,6 +501,7 @@ document.querySelectorAll("aside nav a").forEach(a=>{
     document.getElementById("view-"+a.getAttribute("data-view")).classList.add("active");
     const v = a.getAttribute("data-view");
     if(v==="orders") renderOrders();
+    if(v==="inventory") renderInventory();
     if(v==="dash") renderDash();
     if(v==="stats") renderStats();
     if(v==="pricing") renderPricingTable();
@@ -503,6 +534,95 @@ function renderProductsTable(){
       </td>
     </tr>`).join("");
 }
+/* ---------- inventory (remaining stock per size + ordered colors) ---------- */
+/* Pulls every line ever ordered (from both single-product and cart orders) and
+   aggregates it per product, so this page can show, next to each size's
+   current remaining quantity, how many units of it have actually been sold —
+   and for colors (which have no separate stock number) how many times each
+   one has been ordered, which stands in for "still relevant / popular". */
+function orderLineItems(o){
+  if(Array.isArray(o.items) && o.items.length){
+    return o.items.map(it=>({productId:it.id, color:it.color||"", size:it.size||"", qty:it.qty||1}));
+  }
+  if(o.product){
+    const colors = (o.color||"").split(",").map(c=>c.trim()).filter(Boolean);
+    if(colors.length){
+      return colors.map(c=>({productId:o.product.id, color:c, size:o.size||"", qty:o.qty||1}));
+    }
+    return [{productId:o.product.id, color:"", size:o.size||"", qty:o.qty||1}];
+  }
+  return [];
+}
+function buildInventoryStats(orders){
+  const stats = {}; // productId -> { bySize:{size:qty}, byColor:{color:qty} }
+  orders.forEach(o=>{
+    orderLineItems(o).forEach(({productId, color, size, qty})=>{
+      if(!productId) return;
+      if(!stats[productId]) stats[productId] = {bySize:{}, byColor:{}};
+      if(size) stats[productId].bySize[size] = (stats[productId].bySize[size]||0) + qty;
+      if(color) stats[productId].byColor[color] = (stats[productId].byColor[color]||0) + qty;
+    });
+  });
+  return stats;
+}
+async function renderInventory(filter){
+  const listBox = document.getElementById("inventoryList");
+  const empty = document.getElementById("inventoryEmpty");
+  const q = (filter!==undefined ? filter : (document.getElementById("inventorySearch").value||"")).trim().toLowerCase();
+  const orders = await loadOrders();
+  const stats = buildInventoryStats(orders);
+  const list = PRODUCTS.filter(p=>!q || (p.name||"").toLowerCase().includes(q));
+  empty.style.display = list.length ? "none" : "block";
+  listBox.innerHTML = list.map(p=>{
+    const st = stats[p.id] || {bySize:{}, byColor:{}};
+    const img = (p.images && p.images[0]) ? p.images[0] : "";
+
+    let sizesHTML;
+    if(p.sizes && p.sizes.length){
+      sizesHTML = `<table class="inv-table">
+        <thead><tr><th>المقاس</th><th>المتبقي</th><th>تم بيعه</th></tr></thead>
+        <tbody>
+          ${p.sizes.map(s=>{
+            const qty = s.qty||0;
+            const qtyClass = qty<=0 ? "zero" : (qty<=3 ? "low" : "");
+            const sold = st.bySize[s.size] || 0;
+            return `<tr><td>${s.size}</td><td class="inv-qty ${qtyClass}">${qty}</td><td>${sold}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>`;
+    } else {
+      sizesHTML = `<div class="inv-note">هذا المنتج بدون مقاسات — يُتحكم بتوفره يدويًا (${p.available===false?'<span style="color:var(--red);font-weight:700;">غير متوفر</span>':'<span style="color:var(--green);font-weight:700;">متوفر</span>'}).</div>`;
+    }
+
+    let colorsHTML;
+    if(p.colors && p.colors.length){
+      const rows = p.colors.map(c=>{
+        const ordered = st.byColor[c.name||c.hex] || 0;
+        return `<div class="inv-color-row"><span><span class="sw" style="background:${c.hex}"></span>${c.name||c.hex}</span><span>${ordered ? `طُلب ${ordered} مرة`:"لم يُطلب بعد"}</span></div>`;
+      }).join("");
+      colorsHTML = rows;
+    } else {
+      colorsHTML = `<div class="inv-note">هذا المنتج بدون ألوان معرّفة.</div>`;
+    }
+
+    return `<div class="inv-card">
+      <div class="inv-head">
+        ${img?`<img src="${img}">`:`<div class="thumb64"></div>`}
+        <h4>${p.name}</h4>
+      </div>
+      <div class="inv-cols">
+        <div><div class="inv-note" style="margin-bottom:6px;font-weight:700;color:var(--ink);">المقاسات</div>${sizesHTML}</div>
+        <div><div class="inv-note" style="margin-bottom:6px;font-weight:700;color:var(--ink);">الألوان</div>${colorsHTML}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+document.getElementById("inventorySearch").addEventListener("input", ()=>renderInventory());
+document.getElementById("refreshInventory").onclick = async ()=>{
+  PRODUCTS = await loadProducts();
+  renderInventory();
+};
+
 function openModal(){ document.getElementById("productModalOverlay").classList.add("open"); }
 function closeModal(){ document.getElementById("productModalOverlay").classList.remove("open"); }
 document.getElementById("cancelModal").onclick = closeModal;
